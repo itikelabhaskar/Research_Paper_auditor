@@ -107,3 +107,28 @@ async def test_search_repository_caches_lines(
     res = await tools["search_repository"].ainvoke({"pattern": "lr"})
     assert read_calls == 0
     assert "train.py:2:" in res
+
+
+async def test_search_repository_capped_at_15(tmp_path: Path) -> None:
+    root = tmp_path / "capped_repo"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "many.py").write_text("\n".join(f"item_{i} = 1" for i in range(50)), encoding="utf-8")
+    ctx = offline_context(tmp_path)
+    ctx = dataclasses.replace(ctx, repository=RepositoryRef(url=root.resolve().as_uri()))
+    tools = tools_by_name(ctx)
+    res = await tools["search_repository"].ainvoke({"pattern": "item_"})
+    assert "stopped after 15 matches" in res
+
+
+async def test_read_repository_file_default_120_window(tmp_path: Path) -> None:
+    root = tmp_path / "long_repo"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "long.py").write_text("\n".join(f"line_{i}" for i in range(1, 200)), encoding="utf-8")
+    ctx = offline_context(tmp_path)
+    ctx = dataclasses.replace(ctx, repository=RepositoryRef(url=root.resolve().as_uri()))
+    tools = tools_by_name(ctx)
+    res = await tools["read_repository_file"].ainvoke({"path": "long.py", "start_line": 10})
+    lines = res.strip().splitlines()
+    assert len(lines) == 120
+    assert lines[0].startswith("10: ")
+    assert lines[-1].startswith("129: ")

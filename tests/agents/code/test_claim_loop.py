@@ -311,3 +311,47 @@ async def test_graph_recursion_error_is_unverifiable(
     assert result.outcome is TaskOutcome.UNVERIFIABLE
     assert result.reason is not None
     assert "no verdict within" in result.reason
+
+
+def test_prune_messages_keeps_last_two_turns() -> None:
+    from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+
+    from auditor.agents.code.claim_loop import _prune_messages
+
+    messages: list[AnyMessage] = [
+        HumanMessage("start"),
+        AIMessage("call 1"),
+        ToolMessage("output 1", tool_call_id="call_1"),
+        AIMessage("call 2"),
+        ToolMessage("output 2", tool_call_id="call_2"),
+        AIMessage("call 3"),
+        ToolMessage("output 3", tool_call_id="call_3"),
+    ]
+    pruned = _prune_messages(messages)
+    assert pruned[2].content == "[tool output pruned]"
+    assert isinstance(pruned[2], ToolMessage)
+    assert pruned[2].tool_call_id == "call_1"
+    assert pruned[4].content == "output 2"
+    assert pruned[6].content == "output 3"
+
+
+async def test_accounted_prunes_older_tool_messages_in_multi_turn_run(tmp_path: Path) -> None:
+    (task,) = await planned(tmp_path, EVALUATION)
+    # 3 tool calls followed by final verdict
+    replies = [
+        tool_reply("search_repository", {"pattern": "eval"}),
+        tool_reply("read_repository_file", {"path": "train.py", "start_line": 1}),
+        tool_reply("search_repository", {"pattern": "batch"}),
+        verdict(verdict="supported"),
+    ]
+    ctx, review = context(tmp_path, replies, claim_loop_max_model_calls=5)
+    result = await check(task, ctx)
+    assert result.outcome is TaskOutcome.CHECKED
+    # By turn 3 (index 3 in received), the first tool message from turn 0 should be pruned
+    assert len(review.received) == 4
+    turn3_messages = review.received[3]
+    tool_msgs = [m for m in turn3_messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 3
+    assert tool_msgs[0].content == "[tool output pruned]"
+    assert tool_msgs[1].content != "[tool output pruned]"
+    assert tool_msgs[2].content != "[tool output pruned]"

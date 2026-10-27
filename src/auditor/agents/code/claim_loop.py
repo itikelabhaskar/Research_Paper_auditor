@@ -33,7 +33,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphRecursionError
@@ -193,6 +193,40 @@ def _usage(response: ModelResponse[Any] | AIMessage) -> TokenUsage:
     return total
 
 
+def _prune_messages(messages: Sequence[AnyMessage]) -> list[AnyMessage]:
+    """The messages with the output of all but the last two rounds of tool calls replaced
+    by a short note, so each model call does not resend every file read so far."""
+    tool_turns: list[list[int]] = []
+    current_turn: list[int] = []
+    for idx, msg in enumerate(messages):
+        if isinstance(msg, ToolMessage):
+            current_turn.append(idx)
+        elif current_turn:
+            tool_turns.append(current_turn)
+            current_turn = []
+    if current_turn:
+        tool_turns.append(current_turn)
+
+    if len(tool_turns) <= 2:
+        return list(messages)
+
+    to_prune = {idx for turn in tool_turns[:-2] for idx in turn}
+    pruned: list[AnyMessage] = []
+    for idx, msg in enumerate(messages):
+        if idx in to_prune:
+            pruned.append(
+                msg.model_copy(
+                    update={
+                        "content": "[tool output pruned]",
+                        "artifact": None,
+                    }
+                )
+            )
+        else:
+            pruned.append(msg)
+    return pruned
+
+
 class _Accounted(AgentMiddleware[Any, Any, Any]):
     """Sends each of the agent's model calls through the run's LLM accounting."""
 
@@ -206,6 +240,9 @@ class _Accounted(AgentMiddleware[Any, Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
+        pruned_messages = _prune_messages(request.messages)
+        if pruned_messages != request.messages:
+            request = request.override(messages=pruned_messages)
         return await self.llm.direct_call(
             lambda: handler(request), _usage, effort=self.effort, purpose=PURPOSE
         )

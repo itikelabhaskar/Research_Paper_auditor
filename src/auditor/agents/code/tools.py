@@ -23,8 +23,8 @@ from auditor.infra.snapshots import (
 from auditor.infra.tools import tracked_tool
 from auditor.schemas import RepositorySource
 
-MAX_SEARCH_RESULTS = 50
-MAX_READ_LINES = 400
+MAX_SEARCH_RESULTS = 15
+MAX_READ_LINES = 120
 _LINE_CHARS = 200
 
 # Searches reuse the split lines of the last few snapshots instead of rereading them.
@@ -75,7 +75,7 @@ async def list_repository_files(ctx: RunContext) -> str:
 
 
 @tracked_tool("search_repository")
-async def search_repository(ctx: RunContext, pattern: str, max_results: int = 20) -> str:
+async def search_repository(ctx: RunContext, pattern: str, max_results: int = 15) -> str:
     snapshot = await _snapshot(ctx)
     if isinstance(snapshot, str):
         return snapshot
@@ -96,7 +96,7 @@ async def search_repository(ctx: RunContext, pattern: str, max_results: int = 20
 
 @tracked_tool("read_repository_file")
 async def read_repository_file(
-    ctx: RunContext, path: str, start_line: int = 1, end_line: int = 120
+    ctx: RunContext, path: str, start_line: int = 1, end_line: int | None = None
 ) -> str:
     snapshot = await _snapshot(ctx)
     if isinstance(snapshot, str):
@@ -106,7 +106,12 @@ async def read_repository_file(
     except (KeyError, OSError):
         return f"{path} is not in the repository snapshot; use list_repository_files."
     start = max(1, start_line)
-    end = min(len(lines), end_line, start + MAX_READ_LINES - 1)
+    default_end = start + MAX_READ_LINES - 1
+    end = min(
+        len(lines),
+        end_line if end_line is not None else default_end,
+        start + MAX_READ_LINES - 1,
+    )
     return "\n".join(f"{n}: {lines[n - 1]}" for n in range(start, end + 1))
 
 
@@ -146,10 +151,10 @@ def make_tools(ctx: RunContext) -> list[BaseTool]:
     async def list_files() -> str:
         return await list_repository_files(ctx)
 
-    async def search(pattern: str, max_results: int = 20) -> str:
+    async def search(pattern: str, max_results: int = 15) -> str:
         return await search_repository(ctx, pattern, max_results)
 
-    async def read(path: str, start_line: int = 1, end_line: int = 120) -> str:
+    async def read(path: str, start_line: int = 1, end_line: int | None = None) -> str:
         return await read_repository_file(ctx, path, start_line, end_line)
 
     async def find(key: str) -> str:
